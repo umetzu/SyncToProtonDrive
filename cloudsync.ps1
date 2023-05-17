@@ -7,11 +7,13 @@ using namespace OpenQA.Selenium.Remote
 using namespace System
 
 function GetElementFromPath {
-    [OutputType([WebElement])]
     param (
         [EdgeDriver]$EdgeDriver,
         [string]$XPath,
-        [int]$TimeSpanSeconds = 15,
+        [bool]$ReturnArray = $false,
+        [bool]$IsHidden = $false,
+        [WebElement]$ElementToCheck = $null,
+        [int]$TimeSpanSeconds = 20,
         [int]$TimeSpanMilliseconds = 200
     )
     $TimeSpanWait = [TimeSpan]::FromSeconds($TimeSpanSeconds)
@@ -24,17 +26,33 @@ function GetElementFromPath {
     $By = [By]::XPath($XPath)
     $Condition = {param([EdgeDriver]$x) 
         try {
-            $Element = $x.FindElement($By)        
-            if ($Element.Displayed) {
-                Return $Element
+            if ($null -eq $ElementToCheck) {
+                $ElementToCheck = $x
             }
+
+            if ($ReturnArray) {
+                $Elements = $ElementToCheck.FindElements($By)        
+                if ($Elements.Displayed -Or $IsHidden) {
+                    Return $Elements
+                }
+            } else {
+                $Element = $ElementToCheck.FindElement($By)        
+                if ($Element.Displayed -Or $IsHidden ) {
+                    Return $Element
+                }
+            }            
         } catch { return $null }
     }
 
-    [WebElement]$Result = $null
+    $Result = $null
 
     try {
-        $Result = $DriverWait.Until[WebElement]($Condition)
+        if ($ReturnArray) {
+            $Result = $DriverWait.Until[WebElement[]]($Condition)
+        }
+        else{
+            $Result = $DriverWait.Until[WebElement]($Condition)
+        }        
     } catch { 
         Write-Host "$XPath Not Found"
         Return $null
@@ -48,13 +66,14 @@ function CreateDriver {
     param (
         [string]$StartUrl
     )
+    Write-Host "Creating edge driver."
     $EdgeService = [EdgeDriverService]::CreateDefaultService()
     $EdgeService.HideCommandPromptWindow = $true
 
     $EdgeOptions = New-Object EdgeOptions
     $EdgeOptions.AddArguments("headless")
     
-    [EdgeDriver]$EdgeDriver = New-Object EdgeDriver($EdgeService, $EdgeOptions) 
+    $EdgeDriver = New-Object EdgeDriver($EdgeService, $EdgeOptions) 
     
     $Detector = New-Object LocalFileDetector
     $EdgeDriver.FileDetector = $Detector
@@ -65,14 +84,18 @@ function CreateDriver {
 }
 
 function SendKeysTo {
+    [OutputType([WebElement])]
     param (
         [EdgeDriver]$EdgeDriver,
         [string]$XPath,
-        [string]$Keys
+        [string]$Keys,
+        [bool]$IsHidden = $false
     )
 
-    $TextboxUser = GetElementFromPath $EdgeDriver -XPath $XPath
-    $TextboxUser.SendKeys($Keys)
+    $ElementToSend = GetElementFromPath $EdgeDriver -XPath $XPath -IsHidden $IsHidden
+    $ElementToSend.SendKeys($Keys)
+
+    return $ElementToSend
 }
 function SendPasswordAndSubmit {
     param (
@@ -85,8 +108,7 @@ function SendPasswordAndSubmit {
     Write-Host -NoNewline -ForegroundColor $MessageColor $Message
     $Password = Read-Host -AsSecureString
 
-    $TextboxPassword = GetElementFromPath $EdgeDriver -XPath $XPath
-    $TextboxPassword.SendKeys((ConvertFrom-SecureString -SecureString $Password -AsPlainText))
+    $TextboxPassword = SendKeysTo $EdgeDriver -XPath $XPath -Keys (ConvertFrom-SecureString -SecureString $Password -AsPlainText)
     $Password.Clear()
     $TextboxPassword.Submit()
 }
@@ -98,7 +120,7 @@ function Login {
     Write-Host -NoNewline -ForegroundColor Blue "Enter the username: "
     $Username = Read-Host
 
-    SendKeysTo $EdgeDriver -XPath '//*[@id="username"]' -Keys $Username
+    $null = SendKeysTo $EdgeDriver -XPath '//*[@id="username"]' -Keys $Username
 
     SendPasswordAndSubmit $EdgeDriver -Message "Enter the password for ${Username}: " -XPath '//*[@id="password"]' -MessageColor Red
 
@@ -118,18 +140,37 @@ function UploadFolder {
     $EdgeDriver.ExecuteScript($Js)
 }
 
+function ClickElement {
+    param (
+        [EdgeDriver]$EdgeDriver,
+        [string]$XPath,
+        [WebElement]$ElementToCheck
+    )
+
+    $ElementToClick = GetElementFromPath $EdgeDriver -XPath $XPath -ElementToCheck $ElementToCheck
+    $ElementToClick.Click()
+}
+
+function DoubleClickElement {
+    param (
+        [EdgeDriver]$EdgeDriver,
+        [string]$XPath
+    )
+
+    $ActionCustom = New-Object Actions($EdgeDriver)
+    $FolderElement = GetElementFromPath $EdgeDriver -XPath $XPath
+    $ActionCustom.DoubleClick($FolderElement).Perform()
+}
+
 function GoToFolder {
     param (
         [EdgeDriver]$EdgeDriver,
         [string]$FolderName
     )
 
-    $ActionCustom = New-Object Actions($EdgeDriver)
+    DoubleClickElement $EdgeDriver -XPath "//td[.//span[contains(text(), 'Folder - $FolderName')]]"
 
-    $ByiCloud = [By]::XPath("//td[.//span[contains(text(), 'Folder - $FolderName')]]")
-    $FolderiCloud = $EdgeDriver.FindElement($ByiCloud)
-
-    $ActionCustom.DoubleClick($FolderiCloud).Perform()
+    Write-Host "Current folder: $FolderName"
 }
 
 function GoToRoot {
@@ -137,9 +178,8 @@ function GoToRoot {
         [EdgeDriver]$EdgeDriver
     )
 
-    $ByRoot = [By]::XPath('//button[@title="My files"]')
-    $ButtonRoot = $EdgeDriver.FindElement($ByRoot)
-    $ButtonRoot.Click()
+    ClickElement $EdgeDriver -XPath '//button[@title="My files"]'
+    Write-Host "Current folder: Root"
 }
 
 function UploadFile {
@@ -148,12 +188,10 @@ function UploadFile {
         [string]$FilePath
     )
 
-    $BySingle = [By]::XPath('//input[@type="file"][@multiple]') 
-    $InputElementSingle = $EdgeDriver.FindElement($BySingle) 
-    $InputElementSingle.SendKeys($FilePath)
+    $null = SendKeysTo $EdgeDriver -XPath '//input[@type="file"][@multiple]' -Keys $FilePath -IsHidden $true
+    $EdgeDriver.ExecuteScript("document.querySelectorAll('input[type=\'file\'][multiple]').forEach(element => element.value='');")
 
-    $Js = "document.querySelectorAll('input[type=\'file\'][multiple]').forEach(element => element.value='');"
-    $EdgeDriver.ExecuteScript($Js)
+    Write-Host "Upload of $FilePath started."
 }
 
 function DeleteOldest {
@@ -164,23 +202,21 @@ function DeleteOldest {
     )
 
     try {        
-        $ByZip = [By]::XPath("//tr[.//span[contains(text(), 'File - application/zip - ${FileName}')]]") 
-        $ZipRows = $EdgeDriver.FindElements($ByZip) 
+        $ZipRows = GetElementFromPath $EdgeDriver -XPath "//tr[.//span[contains(text(), 'File - application/zip - ${FileName}')]]" -ReturnArray $true
+         
         if ($ZipRows.Count -gt $ArchivesToKeep) {
             $ToDelete = $ZipRows | Sort-Object -Property ComputedAccessibleLabel | Select-Object -First 1
-            $ByCheckbox = [By]::XPath(".//td[.//input[@type='checkbox']]") 
-            $DeleteCheckbox = $ToDelete.FindElement($ByCheckbox)
-            $DeleteCheckbox.Click()
 
-            $ByDelete = [By]::XPath("//button[@data-testid='toolbar-trash']") 
-            $DeletButton = $EdgeDriver.FindElement($ByDelete)
-            $DeletButton.Click()
+            ClickElement $EdgeDriver -XPath ".//td[.//input[@type='checkbox']]" -ElementToCheck $ToDelete
+
+            ClickElement $EdgeDriver -XPath "//button[@data-testid='toolbar-trash']"
+
             $FileDeletedName = (($ToDelete.Text  -split '\n')[0] -split ' - ')[2]
             Write-Host "File $FileDeletedName deleted."
         }
 
-        Write-Host "$($ZipRows.Count) archives founds. Not deleting."
-    } catch { Write-Host "Nothing to delete."}
+        Write-Host "$($ZipRows.Count) archives founds. Nothing deleted."
+    } catch { Write-Host "Nothing to delete." }
 }
 
 function CompressFolder {
@@ -195,7 +231,7 @@ function CompressFolder {
     Return $OutputFilePath
 }
 
-function DeleteFiles {
+function DeleteLocalFiles {
     param (
         [string[]]$FilePaths
     )
@@ -204,6 +240,8 @@ function DeleteFiles {
             Remove-Item -Path $FilePath -Force
         }
     }
+
+    Write-Host "Temp files cleared."
 }
 
 function CloseDriver {
@@ -212,6 +250,8 @@ function CloseDriver {
     )
     $EdgeDriver.Close()
     $EdgeDriver.Quit()
+
+    Write-Host "Goodbye."
 }
 
 function WaitToUpload {
@@ -221,8 +261,8 @@ function WaitToUpload {
         [int]$SecondsToSleep
     )
     $IsComplete = $false
-    $ByStatus = [By]::XPath("//div[contains(@class, 'transfers-manager-list-item')][.//progress]")
-    $ItemStatuses = $EdgeDriver.FindElements($ByStatus) 
+
+    $ItemStatuses = GetElementFromPath $EdgeDriver -XPath "//div[contains(@class, 'transfers-manager-list-item')][.//progress]" -ReturnArray $true
 
     $EllapsedSeconds = 0
 
@@ -234,9 +274,19 @@ function WaitToUpload {
 
         $AllDone = $true
 
-        foreach ($ItemStatus in $ItemStatuses)
+        for($i=0; $i -lt $ItemStatuses.Count; $i++)
         {
-            $AllDone = $ItemStatus.Text.Contains("Uploaded") -And $AllDone
+            $ItemStatus = $ItemStatuses[$i]
+            $ItemCompleted = $ItemStatus.Text.Contains("Uploaded")
+            $AllDone = $ItemCompleted -And $AllDone
+            $UploadInfo = ($ItemStatus.Text -replace  "`n|`r" -split '.zip',2)[0] + ".zip"
+            $ProgressValue = ($ItemStatus.Text -replace  "`n","" -replace "`r","=" -split '.zip',2)[1] -split '=' | Select-Object -first 3 | Join-String -Separator ' '
+            $IdBar = $i + 10
+            if ($ItemCompleted) {
+                Write-Progress -Activity $UploadInfo -Id $IdBar -Status "$ProgressValue" -PercentComplete 100 -Completed 
+            } else {
+                Write-Progress -Activity $UploadInfo -Id $IdBar -Status "$ProgressValue" -PercentComplete -1 
+            }            
         }
 
         $IsComplete =  $AllDone
@@ -244,9 +294,7 @@ function WaitToUpload {
         $EllapsedSeconds = $EllapsedSeconds + $SecondsToSleep
     }
 
-    $ByClose = [By]::XPath("//button[@data-testid='drive-transfers-manager:close']") 
-    $CloseButton = $EdgeDriver.FindElements($ByClose) 
-    $CloseButton.Click()
+    ClickElement $EdgeDriver -XPath "//button[@data-testid='drive-transfers-manager:close']"
 }
 
 $iCloudDrive = "iCloudDrive"
@@ -261,7 +309,7 @@ $OneDriveZipPath = CompressFolder $OneDrive
 
 $EdgeDriver = CreateDriver $ProtonDriveUrl
 
-Login $EdgeDriver
+$null = Login $EdgeDriver
 
 GoToFolder $EdgeDriver -FolderName $iCloudDrive
 UploadFile $EdgeDriver -FilePath $iCloudZipPath
@@ -271,10 +319,10 @@ GoToRoot $EdgeDriver
 
 GoToFolder $EdgeDriver -FolderName $OneDrive
 UploadFile $EdgeDriver -FilePath $OneDriveZipPath
-DeleteOldest $EdgeDriver -FileName $iCloudDrive -ArchivesToKeep $ArchivesToKeep
+DeleteOldest $EdgeDriver -FileName $OneDrive -ArchivesToKeep $ArchivesToKeep
 
 WaitToUpload $EdgeDriver -MinutesToWait $MinutesToWait -SecondsToSleep $SecondsToSleep
 
-DeleteFiles $iCloudZipPath, $OneDriveZipPath
+DeleteLocalFiles $iCloudZipPath, $OneDriveZipPath
 
 CloseDriver $EdgeDriver
