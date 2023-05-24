@@ -83,6 +83,22 @@ function CreateDriver {
     Return $EdgeDriver
 }
 
+function ReadFile {
+    param (
+        [string]$FilePath,
+        [int]$Line,
+        [bool]$Decrypt = $false
+    )
+    
+    $Encrypted = (Get-Content $FilePath)[$Line] | ConvertTo-SecureString
+    if ($Decrypt) {
+        $Decrypted = ConvertFrom-SecureString -SecureString $Encrypted -AsPlainText
+        Return $Decrypted
+    }
+    
+    Return $Encrypted
+}
+
 function SendKeysTo {
     [OutputType([WebElement])]
     param (
@@ -97,16 +113,16 @@ function SendKeysTo {
 
     return $ElementToSend
 }
+
 function SendPasswordAndSubmit {
     param (
         [EdgeDriver]$EdgeDriver,
-        [string]$Message,
         [string]$XPath,
-        [ConsoleColor]$MessageColor
+        [string]$FilePath,
+        [int]$Line
     )
 
-    Write-Host -NoNewline -ForegroundColor $MessageColor $Message
-    $Password = Read-Host -AsSecureString
+    $Password = ReadFile $FilePath -Line $Line
 
     $TextboxPassword = SendKeysTo $EdgeDriver -XPath $XPath -Keys (ConvertFrom-SecureString -SecureString $Password -AsPlainText)
     $Password.Clear()
@@ -115,16 +131,18 @@ function SendPasswordAndSubmit {
 
 function Login {
     param (
-        [EdgeDriver]$EdgeDriver
+        [EdgeDriver]$EdgeDriver,
+        [string]$FilePath
     )
-    Write-Host -NoNewline -ForegroundColor Blue "Enter the username: "
-    $Username = Read-Host
+    
+    $Username = ReadFile $FilePath -Line 0 -Decrypt $true
+    Write-Host "Logging in as $Username"
 
     $null = SendKeysTo $EdgeDriver -XPath '//*[@id="username"]' -Keys $Username
 
-    SendPasswordAndSubmit $EdgeDriver -Message "Enter the password for ${Username}: " -XPath '//*[@id="password"]' -MessageColor Red
+    SendPasswordAndSubmit $EdgeDriver -XPath '//*[@id="password"]' -FilePath $FilePath -Line 1
 
-    SendPasswordAndSubmit $EdgeDriver -Message "Enter the mailbox password: " -XPath '//*[@id="mailboxPassword"]' -MessageColor White
+    SendPasswordAndSubmit $EdgeDriver -XPath '//*[@id="mailboxPassword"]' -FilePath $FilePath -Line 2
 }
 
 function UploadFolder {
@@ -300,16 +318,16 @@ function WaitToUpload {
 $iCloudDrive = "iCloudDrive"
 $OneDrive = "OneDrive"
 $ProtonDriveUrl = 'https://drive.proton.me'
+$FilePath = $args[0]
 $MinutesToWait = 60
 $SecondsToSleep = 5
 $ArchivesToKeep = 5
-
 $iCloudZipPath = CompressFolder $iCloudDrive
 $OneDriveZipPath = CompressFolder $OneDrive
 
 $EdgeDriver = CreateDriver $ProtonDriveUrl
 
-$null = Login $EdgeDriver
+$null = Login $EdgeDriver -FilePath $FilePath
 
 GoToFolder $EdgeDriver -FolderName $iCloudDrive
 UploadFile $EdgeDriver -FilePath $iCloudZipPath
